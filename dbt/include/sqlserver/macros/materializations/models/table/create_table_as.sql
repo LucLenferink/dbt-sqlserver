@@ -4,19 +4,48 @@
     {%- set sql_header = config.get('sql_header', none) -%}
     {%- set as_columnstore = config.get('as_columnstore', default=true) -%}
     {%- set temp_view_sql = sql.replace("'", "''") -%}
+    {%- set tmp_relation = relation.incorporate(path={"identifier": relation.identifier.replace("#", "") ~ '_temp_view'}, type='view') -%}
 
     {{- sql_header if sql_header is not none -}}
 
-    -- select into the table and create it that way
-    use [{{ relation.database }}];
-    exec('
+    {%- if 'with' in sql -%}  -- TODO: replace with regex: '(?:^|\s)with(?:$|\s)'
+        -- drop previous temp view
+        {{- sqlserver__drop_relation_script(tmp_relation) }}
+
+        -- create temp view
+        use [{{ relation.database }}];
+        exec('
+            create view
+                {{ tmp_relation.include(database=False) }}
+            as
+                {{ temp_view_sql }}
+        ');
+
+        -- select into the table and create it that way
+        {# TempDB schema is ignored, always goes to dbo #}
         select
             *
         into
             {{ relation.include(database=False, schema=(not temporary)) }}
         from
-            {{ temp_view_sql }}
-    ');
+            {{ tmp_relation }}
+
+        -- drop temp view
+        {{ sqlserver__drop_relation_script(tmp_relation) }}
+    {%- else -%}
+        -- select into the table and create it that way
+        use [{{ relation.database }}];
+        exec('
+            select
+                *
+            into
+                {{ relation.include(database=False, schema=(not temporary)) }}
+            from
+                (
+                    {{ temp_view_sql }}
+                ) x
+        ');
+    {%- endif -%}
 
     {%- if not temporary and as_columnstore -%}
         -- add columnstore index
